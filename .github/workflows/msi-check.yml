@@ -1,0 +1,141 @@
+# Temporary fork-only check for storytold/cadcraft#32: build the MSI with stub binaries and test
+# the desktop shortcut (silent installs, upgrades, uninstall, and the wizard). Not part of the PR.
+name: MSI check (temporary)
+on:
+  push:
+    branches: [tmp/32-msi-check]
+  workflow_dispatch:
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+      - name: Build MSIs (stub binaries)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = "$env:RUNNER_TEMP\bin"; New-Item -ItemType Directory -Force $bin | Out-Null
+          Copy-Item C:\Windows\System32\notepad.exe "$bin\cadcraft.exe"
+          Copy-Item C:\Windows\System32\cmd.exe "$bin\cadcraft-cli.exe"
+          $out = "$env:RUNNER_TEMP\msi"; New-Item -ItemType Directory -Force $out | Out-Null
+          $builds = @(@('x64','1.0.0'), @('x64','1.0.1'), @('x64','1.0.2'), @('x86','1.0.0'), @('arm64','1.0.0'))
+          foreach ($b in $builds) {
+            $msi = "$out\cadcraft-$($b[1])-$($b[0]).msi"
+            wix build packaging/windows/cadcraft.wxs -arch $b[0] -ext WixToolset.UI.wixext `
+              -d "Version=$($b[1])" -d "BinDir=$bin" -d "IconPath=$PWD\assets\app-icon\cadcraft.ico" -o $msi
+            if ($LASTEXITCODE -ne 0) { throw "wix build $($b[0]) $($b[1]) failed" }
+            wix msi validate $msi
+            if ($LASTEXITCODE -ne 0) { throw "wix msi validate $msi failed" }
+            Write-Output "built + validated $msi"
+          }
+      - name: Inspect MSI tables
+        shell: pwsh
+        run: |
+          $msi = "$env:RUNNER_TEMP\msi\cadcraft-1.0.0-x64.msi"
+          $i = New-Object -ComObject WindowsInstaller.Installer
+          $db = $i.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $i, @($msi, 0))
+          function Q([string] $sql, [int] $cols) {
+            Write-Output "== $sql"
+            $v = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            $v.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $v, $null) | Out-Null
+            while ($r = $v.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $v, $null)) {
+              (1..$cols | ForEach-Object { $r.GetType().InvokeMember('StringData', 'GetProperty', $null, $r, $_) }) -join ' | '
+            }
+          }
+          Q "SELECT Control, Type, Property, Text FROM Control WHERE Dialog_='ShortcutsDlg'" 4
+          Q "SELECT Dialog_, Control_, Event, Argument, Condition FROM ControlEvent WHERE Dialog_='WelcomeDlg' OR Dialog_='ShortcutsDlg' OR Dialog_='VerifyReadyDlg'" 5
+          Q "SELECT Component, Directory_, Condition, KeyPath FROM Component" 4
+          Q "SELECT Shortcut, Directory_, Name, Component_, Target FROM Shortcut" 5
+          Q "SELECT Action, Type, Source, Target FROM CustomAction" 4
+          Q "SELECT Action, Condition, Sequence FROM InstallUISequence WHERE Action='AppSearch' OR Action='SetDESKTOPSHORTCUT'" 3
+          Q "SELECT Action, Condition, Sequence FROM InstallExecuteSequence WHERE Action='AppSearch' OR Action='SetDESKTOPSHORTCUT'" 3
+          Q "SELECT Property, Value FROM Property WHERE Property='SecureCustomProperties' OR Property='ARPNOMODIFY'" 2
+      - name: Silent installs, upgrades, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "$env:RUNNER_TEMP\msi"
+          $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'CADCraft.lnk'
+          $start = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'CADCraft.lnk'
+          $key = 'HKCU:\Software\Learning Machines LLC\CADCraft'
+          function Msi([string] $step, [string[]] $a) {
+            $p = Start-Process msiexec.exe -ArgumentList ($a + @('/qn', '/l*v', "$env:RUNNER_TEMP\$step.log")) -Wait -PassThru
+            Write-Output "msiexec $($a -join ' ') -> $($p.ExitCode)"
+            if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\$step.log" -Tail 60; throw "$step failed" }
+          }
+          function Check([string] $what, [bool] $ok) { if ($ok) { Write-Output "ok   $what" } else { throw "FAIL $what" } }
+          function DeskReg { (Get-ItemProperty -Path $key -Name DesktopShortcut -ErrorAction SilentlyContinue).DesktopShortcut }
+
+          Write-Output "public desktop: $desk"
+          Msi 'a-default' @('/i', "$out\cadcraft-1.0.0-x64.msi")
+          Check 'default install: Start Menu shortcut' (Test-Path $start)
+          Check 'default install: no desktop shortcut' (-not (Test-Path $desk))
+          Check 'default install: no DesktopShortcut registry value' (-not (DeskReg))
+          Msi 'b-uninstall' @('/x', "$out\cadcraft-1.0.0-x64.msi")
+
+          Msi 'c-desktop' @('/i', "$out\cadcraft-1.0.0-x64.msi", 'DESKTOPSHORTCUT=1')
+          Check 'DESKTOPSHORTCUT=1: desktop shortcut' (Test-Path $desk)
+          Check 'DESKTOPSHORTCUT=1: Start Menu shortcut' (Test-Path $start)
+          Check 'DESKTOPSHORTCUT=1: registry value 1' ((DeskReg) -eq '1')
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($desk).TargetPath
+          Write-Output "desktop shortcut target: $target"
+          Check 'desktop shortcut targets the installed cadcraft.exe' ($target -like '*\CADCraft\cadcraft.exe')
+
+          Msi 'd-upgrade-keep' @('/i', "$out\cadcraft-1.0.1-x64.msi")
+          Check 'upgrade without DESKTOPSHORTCUT keeps the desktop shortcut' (Test-Path $desk)
+
+          Msi 'e-upgrade-drop' @('/i', "$out\cadcraft-1.0.2-x64.msi", 'DESKTOPSHORTCUT=0')
+          Check 'upgrade with DESKTOPSHORTCUT=0 removes the desktop shortcut' (-not (Test-Path $desk))
+          Check 'upgrade with DESKTOPSHORTCUT=0 removes the registry value' (-not (DeskReg))
+          Check 'upgrade with DESKTOPSHORTCUT=0 keeps the Start Menu shortcut' (Test-Path $start)
+          Msi 'f-uninstall' @('/x', "$out\cadcraft-1.0.2-x64.msi")
+
+          Msi 'g-desktop' @('/i', "$out\cadcraft-1.0.0-x64.msi", 'DESKTOPSHORTCUT=1')
+          Check 'reinstall with DESKTOPSHORTCUT=1: desktop shortcut' (Test-Path $desk)
+          Msi 'h-uninstall' @('/x', "$out\cadcraft-1.0.0-x64.msi")
+          Check 'uninstall removes the desktop shortcut' (-not (Test-Path $desk))
+          Check 'uninstall removes the Start Menu shortcut' (-not (Test-Path $start))
+          Check 'uninstall removes the registry value' (-not (DeskReg))
+          Write-Output "registry key left after uninstall: $(Test-Path $key)"
+      - name: Wizard (full UI, ticking the checkbox)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $shots = "$env:RUNNER_TEMP\shots"; New-Item -ItemType Directory -Force $shots | Out-Null
+          function Shot([string] $name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$shots\$name.png"); $g.Dispose(); $bmp.Dispose(); Write-Output "shot $name"
+          }
+          $ws = New-Object -ComObject WScript.Shell
+          function Keys([string] $k) { [void]$ws.AppActivate('CADCraft Setup'); Start-Sleep -Milliseconds 500; $ws.SendKeys($k); Start-Sleep -Seconds 3 }
+          $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'CADCraft.lnk'
+          $p = Start-Process msiexec.exe -ArgumentList @('/i', "$env:RUNNER_TEMP\msi\cadcraft-1.0.0-x64.msi", '/l*v', "$env:RUNNER_TEMP\ui.log") -PassThru
+          Start-Sleep -Seconds 10
+          Shot '1-welcome'
+          Keys '%n'; Shot '2-shortcuts'
+          Keys '%d'; Shot '3-shortcuts-ticked'
+          Keys '%n'; Shot '4-ready'
+          Keys '%i'; Start-Sleep -Seconds 15; Shot '5-finish'
+          Keys '{ENTER}'
+          $p.WaitForExit(60000) | Out-Null
+          Write-Output "msiexec exit: $($p.ExitCode)"
+          Write-Output "desktop shortcut after wizard with the box ticked: $(Test-Path $desk)"
+          Select-String -Path "$env:RUNNER_TEMP\ui.log" -Pattern 'DESKTOPSHORTCUT' | Select-Object -First 20 | ForEach-Object { $_.Line }
+          Start-Process msiexec.exe -ArgumentList @('/x', "$env:RUNNER_TEMP\msi\cadcraft-1.0.0-x64.msi", '/qn') -Wait
+          Write-Output "desktop shortcut after uninstall: $(Test-Path $desk)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: msi-check
+          path: |
+            ${{ runner.temp }}/msi/*.msi
+            ${{ runner.temp }}/shots/*.png
+            ${{ runner.temp }}/*.log
