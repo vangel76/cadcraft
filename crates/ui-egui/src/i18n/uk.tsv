@@ -191,6 +191,7 @@
 	Cut	Вирізати
 	Cyan	Блакитний
 	Cylinder	Циліндр
+	Drawing Properties...	Властивості креслення...
 	DWG	DWG
 	DWG Reference...	Посилання на DWG...
 	DXF	DXF
@@ -333,6 +334,7 @@
 	External Reference	Зовнішнє посилання
 	External References	Зовнішні посилання
 	Extrude	Видавити
+	Field...	Поле...
 	File	Файл
 	File Tab	Вкладка файлу
 	Fillet	Спряження
@@ -1025,6 +1027,7 @@
 	Specify total angle	Укажіть загальний кут
 	Specify total length or	Укажіть загальну довжину або
 	Specify width for rectangles	Укажіть ширину прямокутників
+	Spelling	Орфографія
 	Sphere	Сфера
 	Spline	Сплайн
 	Spline Edit	Редагувати сплайн
@@ -1111,6 +1114,7 @@
 	Up	Угору
 	Update Data Links	Оновити зв’язки з даними
 	Update	Оновити
+	Update Fields	Оновити поля
 	Use System Setting	Як у системі
 	User	Користувач
 	User Parameters	Параметри користувача
