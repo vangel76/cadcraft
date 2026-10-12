@@ -139,3 +139,26 @@ fn spell_at_the_command_line_with_a_user_dictionary() {
     assert!(std::fs::read_to_string(&dict).unwrap().lines().any(|l| l == "of"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn updatefield_recalculates_table_formulas() {
+    let mut s = Session::new();
+    let c = s.execute("circle", &json!({"center": [0, 0], "radius": 2})).unwrap();
+    let ch = c["handle"].as_str().unwrap().to_string();
+    let f = s.execute("field", &json!({"at": [20, 0], "field": "object", "handle": ch, "property": "radius", "format": "%lu2%pr0"})).unwrap();
+    let code = contents(&s, f["handle"].as_str().unwrap());
+    let t = s.execute("table", &json!({"at": [0, 5], "cells": [["", ""], ["", ""]], "rowHeight": 1.0, "colWidth": 3.0})).unwrap();
+    let th = t["handle"].as_str().unwrap().to_string();
+    s.execute("table.set", &json!({"handle": th, "row": 0, "col": 0, "text": code})).unwrap();
+    s.execute("table.set", &json!({"handle": th, "row": 0, "col": 1, "text": "=A1*2"})).unwrap();
+    s.execute("updatefield", &json!({})).unwrap();
+    let cell = |s: &Session, c: usize| match s.doc().unwrap().entity(Handle::parse_hex(&th).unwrap()).map(|e| e.kind.clone()) {
+        Some(EntityKind::Table(t)) => fields::display(&t.cells[0][c].text).into_owned(),
+        k => panic!("no table: {k:?}"),
+    };
+    assert_eq!((cell(&s, 0).as_str(), cell(&s, 1).as_str()), ("2", "4"));
+    // The circle grows: the field cell and the formula that reads it both follow.
+    s.execute("scale", &json!({"handles": [ch], "base": [0, 0], "factor": 3})).unwrap();
+    s.execute("updatefield", &json!({})).unwrap();
+    assert_eq!((cell(&s, 0).as_str(), cell(&s, 1).as_str()), ("6", "12"));
+}

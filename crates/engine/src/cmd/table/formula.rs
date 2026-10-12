@@ -424,7 +424,7 @@ impl Values<'_> {
             // A formula cell that was not evaluated depends on a cycle.
             return Err(FormulaError::Cycle);
         }
-        Ok(cell.and_then(|x| number_of(&x.text)))
+        Ok(cell.and_then(|x| number_of(&cadcraft_doc::fields::display(&x.text))))
     }
     fn eval(&self, e: &Expr) -> R<f64> {
         match e {

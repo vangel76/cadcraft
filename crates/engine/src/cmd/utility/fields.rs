@@ -290,6 +290,8 @@ pub(crate) fn update_fields(s: &mut Session, handles: Option<&[Handle]>, now: Op
     for (h, k) in edits {
         d.modify_entity(h, |e| e.kind = k)?;
     }
+    // Table formulas follow the updated fields.
+    super::super::table::recalc(s, None)?;
     Ok((found, changed))
 }
 
